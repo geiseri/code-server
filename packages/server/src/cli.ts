@@ -28,7 +28,7 @@ commander.version(process.env.VERSION || "development")
 	.option("-e, --extensions-dir <dir>", "Override the main default path for user extensions.")
 	.option("--extra-extensions-dir [dir]", "Path to an extra user extension directory (repeatable).", collect, [])
 	.option("--extra-builtin-extensions-dir [dir]", "Path to an extra built-in extension directory (repeatable).", collect, [])
-	.option("-d --user-data-dir <dir>", "Specifies the directory that user data is kept in, useful when running as root.")
+	.option("-d, --user-data-dir <dir>", "Specifies the directory that user data is kept in, useful when running as root.")
 	.option("--data-dir <value>", "DEPRECATED: Use '--user-data-dir' instead. Customize where user-data is stored.")
 	.option("-h, --host <value>", "Customize the hostname.", "0.0.0.0")
 	.option("-o, --open", "Open in the browser on startup.", false)
@@ -38,6 +38,7 @@ commander.version(process.env.VERSION || "development")
 	.option("-P, --password <value>", "DEPRECATED: Use the PASSWORD environment variable instead. Specify a password for authentication.")
 	.option("--disable-telemetry", "Disables ALL telemetry.", false)
 	.option("--socket <value>", "Listen on a UNIX socket. Host and port will be ignored when set.")
+	.option("--trust-proxy", "Trust the X-Forwarded-For header, useful when using a reverse proxy.", false)
 	.option("--install-extension <value>", "Install an extension by its ID.")
 	.option("--bootstrap-fork <name>", "Used for development. Never set.")
 	.option("--extra-args <args>", "Used for development. Never set.")
@@ -74,6 +75,7 @@ const bold = (text: string | number): string | number => {
 		readonly cert?: string;
 		readonly certKey?: string;
 		readonly socket?: string;
+		readonly trustProxy?: boolean;
 
 		readonly installExtension?: string;
 
@@ -273,17 +275,41 @@ const bold = (text: string | number): string | number => {
 			},
 		},
 		password,
+		trustProxy: options.trustProxy,
 		httpsOptions: hasCustomHttps ? {
 			key: certKeyData,
 			cert: certData,
 		} : undefined,
 	});
 
-	logger.info("Starting webserver...", field("host", options.host), field("port", options.port));
 	if (options.socket) {
-		app.server.listen(options.socket);
+		logger.info("Starting webserver via socket...", field("socket", options.socket));
+		app.server.listen(options.socket, () => {
+			logger.info(" ");
+			logger.info("Started on socket address:");
+			logger.info(options.socket!);
+			logger.info(" ");
+		});
 	} else {
-		app.server.listen(options.port, options.host);
+		logger.info("Starting webserver...", field("host", options.host), field("port", options.port));
+		app.server.listen(options.port, options.host, async () => {
+			const protocol = options.allowHttp ? "http" : "https";
+			const address = app.server.address();
+			const port = typeof address === "string" ? options.port : address.port;
+			const url = `${protocol}://localhost:${port}/`;
+			logger.info(" ");
+			logger.info("Started (click the link below to open):");
+			logger.info(url);
+			logger.info(" ");
+
+			if (options.open) {
+				try {
+					await opn(url);
+				} catch (e) {
+					logger.warn("Url couldn't be opened automatically.", field("url", url), field("error", e.message));
+				}
+			}
+		});
 	}
 	let clientId = 1;
 	app.wss.on("connection", (ws, req) => {
@@ -315,29 +341,16 @@ const bold = (text: string | number): string | number => {
 		logger.warn("Documentation on securing your setup: https://github.com/cdr/code-server/blob/master/doc/security/ssl.md");
 	}
 
-	if (!options.noAuth && !usingCustomPassword) {
+	if (!options.noAuth) {
 		logger.info(" ");
-		logger.info(`Password:\u001B[1m ${password}`);
+		logger.info(usingCustomPassword ? "Using custom password." : `Password:\u001B[1m ${password}`);
 	} else {
+		logger.warn(" ");
 		logger.warn("Launched without authentication.");
 	}
 	if (options.disableTelemetry) {
-		logger.info("Telemetry is disabled");
-	}
-
-	const protocol = options.allowHttp ? "http" : "https";
-	const url = `${protocol}://localhost:${options.port}/`;
-	logger.info(" ");
-	logger.info("Started (click the link below to open):");
-	logger.info(url);
-	logger.info(" ");
-
-	if (options.open) {
-		try {
-			await opn(url);
-		} catch (e) {
-			logger.warn("Url couldn't be opened automatically.", field("url", url), field("exception", e));
-		}
+		logger.info(" ");
+		logger.info("Telemetry is disabled.");
 	}
 })().catch((ex) => {
 	logger.error(ex);
